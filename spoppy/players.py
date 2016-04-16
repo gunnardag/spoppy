@@ -1,19 +1,20 @@
 import logging
-from collections import defaultdict
 import random
 import threading
-import time
+from collections import defaultdict
+
+import spotify
+
+from .menus import SavePlaylist, SongSelectedWhilePlaying
+from .responses import NOOP, UP
+from .util import (LIBSPOTIFY_SECOND, calculate_duration, format_track,
+                   get_duration_from_s, single_char_with_timeout)
 
 try:
     import thread
 except ImportError:
     import _thread as thread
 
-import spotify
-
-from .responses import NOOP, UP
-from .util import single_char_with_timeout, format_track, get_duration_from_s
-from .menus import SavePlaylist, SongSelectedWhilePlaying
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class Player(object):
         self.navigator = navigator
         self._initialized = False
         self.end_of_track = None
+        self.sink = None
 
         self.clear()
         self.actions = {
@@ -80,8 +82,7 @@ class Player(object):
         '''
         self.current_track_idx = 0
         self.current_track = None
-        self.seconds_played = 0
-        self.play_timestamp = None
+        self.duration_played = 0
         self.song_order = []
         self.current_track_duration = ''
         self.repeat = self.REPEAT_OPTIONS[0]
@@ -89,6 +90,9 @@ class Player(object):
         self.playlist = None
         self.song_list = []
         self._trigger_redraw = False
+
+    def connect_audio_sink(self, session):
+        self.sink = SpoppyAlsaSink(self, session)
 
     def has_been_loaded(self):
         '''
@@ -108,6 +112,13 @@ class Player(object):
             # For quicker access
             self.session = self.navigator.session
             self.player = self.session.player
+
+            # Register event listeners
+            self.session.on(
+                spotify.SessionEvent.END_OF_TRACK,
+                self.on_end_of_track
+            )
+
             self._initialized = True
 
     def is_playing(self):
@@ -116,6 +127,9 @@ class Player(object):
         :returns: True if the player is currently playing
         '''
         return self.player.state == spotify.PlayerState.PLAYING
+
+    def get_seconds_played(self):
+        return self.duration_played / LIBSPOTIFY_SECOND
 
     # UI specific
     def get_help_ui(self):
@@ -128,6 +142,9 @@ class Player(object):
         for action, hotkeys in sorted(self.reversed_actions.items()):
             if self.shuffle and action.startswith('move_song'):
                 # Moving songs is not available when we are shuffling
+                continue
+            if action == 'debug':
+                # We don't really want to show the debug entry
                 continue
             res.append(
                 '[%s]: %s' % (
@@ -145,11 +162,7 @@ class Player(object):
                                  percent_played,
                                  current_track_duration)
         '''
-        seconds_played = self.seconds_played
-        if self.play_timestamp is not None:
-            # We are actually playing and we have to calculate the number of
-            # seconds since we last pressed play
-            seconds_played += time.time() - self.play_timestamp
+        seconds_played = self.get_seconds_played()
 
         # pyspotify's duration is in ms
         percent_played = (seconds_played * 1000) / float(
@@ -292,13 +305,10 @@ class Player(object):
         Seeks the current song 10 seconds back
         :returns: None
         '''
-        if self.play_timestamp is not None:
-            self.seconds_played += time.time() - self.play_timestamp
-            self.play_timestamp = time.time()
-        self.seconds_played -= 10
-        if self.seconds_played < 0:
-            self.seconds_played = 0
-        self.player.seek(int(self.seconds_played * 1000))
+        self.duration_played -= 10 * LIBSPOTIFY_SECOND
+        if self.duration_played < 0:
+            self.duration_played = 0
+        self.player.seek(int(self.get_seconds_played() * 1000))
 
     def debug(self):
         '''
@@ -313,11 +323,8 @@ class Player(object):
         Seeks the current song 10 seconds forward
         :returns: None
         '''
-        if self.play_timestamp is not None:
-            self.seconds_played += time.time() - self.play_timestamp
-            self.play_timestamp = time.time()
-        self.seconds_played += 10
-        self.player.seek(int(self.seconds_played * 1000))
+        self.duration_played += 10 * LIBSPOTIFY_SECOND
+        self.player.seek(int(self.get_seconds_played() * 1000))
 
     def get_help(self):
         '''
@@ -375,11 +382,8 @@ class Player(object):
         '''
         if not self.is_playing():
             self.player.play()
-            self.play_timestamp = time.time()
         else:
             self.player.pause()
-            self.seconds_played += time.time() - self.play_timestamp
-            self.play_timestamp = None
         return NOOP
 
     def previous_song(self):
@@ -578,16 +582,6 @@ class Player(object):
             self.shuffle = shuffle
         self.set_song_order_by_shuffle()
 
-    def on_end_of_track(self, session=None):
-        '''
-        Sets the end of track event and signals the player something has
-        happened.
-        :param session: A `spotify.Session` (optional, not used)
-        :returns: None
-        '''
-        self.end_of_track.set()
-        thread.interrupt_main()
-
     def play_current_song(self, start_playing=True):
         '''
         Plays the current song
@@ -611,15 +605,9 @@ class Player(object):
         if start_playing:
             self.play_pause()
 
-        self.seconds_played = 0
+        self.duration_played = 0
 
         logger.debug('Playing track %s' % self.current_track.name)
-
-        # Register event listeners
-        self.session.on(
-            spotify.SessionEvent.END_OF_TRACK,
-            self.on_end_of_track
-        )
 
     def play_track(self, track_idx):
         '''
@@ -639,3 +627,32 @@ class Player(object):
         self.song_order = list(range(len(self.song_list)))
         if self.shuffle:
             random.shuffle(self.song_order)
+
+    # Event handlers
+    def music_delivered(self, session, audio_format, frames, num_frames):
+        self.duration_played += calculate_duration(
+            num_frames, audio_format.sample_rate
+        )
+        logger.debug(self.get_seconds_played())
+
+    def on_end_of_track(self, session=None):
+        '''
+        Sets the end of track event and signals the player something has
+        happened.
+        :param session: A `spotify.Session` (optional, not used)
+        :returns: None
+        '''
+        self.end_of_track.set()
+        thread.interrupt_main()
+
+
+class SpoppyAlsaSink(spotify.AlsaSink):
+    def __init__(self, player, session):
+        self.player = player
+        super(SpoppyAlsaSink, self).__init__(session)
+
+    def _on_music_delivery(self, session, audio_format, frames, num_frames):
+        self.player.music_delivered(session, audio_format, frames, num_frames)
+        return super(SpoppyAlsaSink, self)._on_music_delivery(
+            session, audio_format, frames, num_frames
+        )

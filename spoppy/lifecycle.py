@@ -78,7 +78,7 @@ class LifeCycle(object):
         self._pyspotify_session_loop.start()
 
         # Connect an audio sink
-        spotify.AlsaSink(self._pyspotify_session)
+        self.player.connect_audio_sink(self._pyspotify_session)
 
         # Events for coordination
         logged_in = threading.Event()

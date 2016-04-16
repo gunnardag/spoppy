@@ -12,8 +12,9 @@ import termios
 import tty
 
 from . import responses
-
 logger = logging.getLogger(__name__)
+
+LIBSPOTIFY_SECOND = 1000000000
 
 
 # Initially taken from https://github.com/magmax/python-readchar
@@ -93,6 +94,10 @@ def get_duration_from_s(s):
         str(int(s / 60)).zfill(2),
         str(int(s % 60)).zfill(2)
     )
+
+def calculate_duration(num_samples, sample_rate):
+    # return num_samples / sample_rate
+    return num_samples * (LIBSPOTIFY_SECOND / sample_rate)
 
 if __name__ == '__main__':
     if sys.argv[-1] == 'wrapper':
