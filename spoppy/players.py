@@ -7,7 +7,7 @@ import spotify
 
 from .menus import SavePlaylist, SongSelectedWhilePlaying
 from .responses import NOOP, UP
-from .util import (LIBSPOTIFY_SECOND, calculate_duration, format_track,
+from .util import (calculate_duration, format_track,
                    get_duration_from_s, single_char_with_timeout)
 
 try:
@@ -17,6 +17,14 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+
+def unload_resources(function):
+    def decorated(self, *args, **kwargs):
+        self.player.pause()
+        self.sink.clear()
+        return function(self, *args, **kwargs)
+    return decorated
 
 
 class Player(object):
@@ -91,8 +99,8 @@ class Player(object):
         self.song_list = []
         self._trigger_redraw = False
 
-    def connect_audio_sink(self, session):
-        self.sink = SpoppyAlsaSink(self, session)
+    def set_audio_sink(self, sink):
+        self.sink = sink
 
     def has_been_loaded(self):
         '''
@@ -129,7 +137,7 @@ class Player(object):
         return self.player.state == spotify.PlayerState.PLAYING
 
     def get_seconds_played(self):
-        return self.duration_played / LIBSPOTIFY_SECOND
+        return self.duration_played
 
     # UI specific
     def get_help_ui(self):
@@ -300,12 +308,13 @@ class Player(object):
         self._trigger_redraw = True
 
     # Event handlers
+    @unload_resources
     def backward_10s(self):
         '''
         Seeks the current song 10 seconds back
         :returns: None
         '''
-        self.duration_played -= 10 * LIBSPOTIFY_SECOND
+        self.duration_played -= 10
         if self.duration_played < 0:
             self.duration_played = 0
         self.player.seek(int(self.get_seconds_played() * 1000))
@@ -318,12 +327,13 @@ class Player(object):
         import pdb
         pdb.set_trace()
 
+    @unload_resources
     def forward_10s(self):
         '''
         Seeks the current song 10 seconds forward
         :returns: None
         '''
-        self.duration_played += 10 * LIBSPOTIFY_SECOND
+        self.duration_played += 10
         self.player.seek(int(self.get_seconds_played() * 1000))
 
     def get_help(self):
@@ -366,6 +376,7 @@ class Player(object):
             self.current_track_idx = k
         return NOOP
 
+    @unload_resources
     def next_song(self):
         '''
         Plays the next song in the song list
@@ -381,11 +392,14 @@ class Player(object):
         :returns: responses.NOOP
         '''
         if not self.is_playing():
+            self.sink.play()
             self.player.play()
         else:
+            self.sink.pause()
             self.player.pause()
         return NOOP
 
+    @unload_resources
     def previous_song(self):
         '''
         Plays the previous song in the song list
@@ -395,6 +409,7 @@ class Player(object):
         self.play_current_song()
         return NOOP
 
+    @unload_resources
     def remove_current_song(self):
         '''
         Removes the current song from the queue. Note that the song is not
@@ -449,6 +464,7 @@ class Player(object):
             return res
         return NOOP
 
+    @unload_resources
     def stop_and_clear(self):
         '''
         Stops the current song and clears the current song list, then exits
@@ -629,11 +645,14 @@ class Player(object):
             random.shuffle(self.song_order)
 
     # Event handlers
-    def music_delivered(self, session, audio_format, frames, num_frames):
+    def music_delivered(self, sample_rate, num_frames):
+        # logger.debug('num_frames %s' % num_frames)
+
+        # return
         self.duration_played += calculate_duration(
-            num_frames, audio_format.sample_rate
+            num_frames, sample_rate
         )
-        logger.debug(self.get_seconds_played())
+        logger.debug('seconds played: %s' % self.get_seconds_played())
 
     def on_end_of_track(self, session=None):
         '''
@@ -644,15 +663,3 @@ class Player(object):
         '''
         self.end_of_track.set()
         thread.interrupt_main()
-
-
-class SpoppyAlsaSink(spotify.AlsaSink):
-    def __init__(self, player, session):
-        self.player = player
-        super(SpoppyAlsaSink, self).__init__(session)
-
-    def _on_music_delivery(self, session, audio_format, frames, num_frames):
-        self.player.music_delivered(session, audio_format, frames, num_frames)
-        return super(SpoppyAlsaSink, self)._on_music_delivery(
-            session, audio_format, frames, num_frames
-        )

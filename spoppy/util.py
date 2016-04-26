@@ -14,6 +14,11 @@ import tty
 from . import responses
 logger = logging.getLogger(__name__)
 
+
+import gi
+gi.require_version('Gst', '1.0')
+from gi.repository import GLib, GObject, Gst
+
 LIBSPOTIFY_SECOND = 1000000000
 
 
@@ -95,9 +100,11 @@ def get_duration_from_s(s):
         str(int(s % 60)).zfill(2)
     )
 
-def calculate_duration(num_samples, sample_rate):
-    # return num_samples / sample_rate
-    return num_samples * (LIBSPOTIFY_SECOND / sample_rate)
+
+def calculate_duration(num_frames, sample_rate):
+    # return num_frames / sample_rate
+    return Gst.util_uint64_scale(num_frames, Gst.SECOND, sample_rate) / Gst.SECOND
+    # return num_frames * (LIBSPOTIFY_SECOND / sample_rate)
 
 if __name__ == '__main__':
     if sys.argv[-1] == 'wrapper':

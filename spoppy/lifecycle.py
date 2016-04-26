@@ -2,12 +2,12 @@ import logging
 import os
 import threading
 
-import click
 import spotify
 from appdirs import user_cache_dir
-from spotipy import Spotify, SpotifyException, oauth2
+from spotipy import Spotify, oauth2
 
 from .dbus_listener import DBusListener
+from .sink import SpoppyAlsaSink
 from .terminal import ResizeChecker
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,13 @@ class LifeCycle(object):
         self._pyspotify_session_loop.start()
 
         # Connect an audio sink
-        self.player.connect_audio_sink(self._pyspotify_session)
+        self.sink = SpoppyAlsaSink(
+            self.player, self._pyspotify_session, self.service_stop_event
+        )
+        self.services.append(self.sink)
+        self._pyspotify_session.on(
+            spotify.SessionEvent.MUSIC_DELIVERY, self.sink.on_music_delivery)
+        self.player.set_audio_sink(self.sink)
 
         # Events for coordination
         logged_in = threading.Event()

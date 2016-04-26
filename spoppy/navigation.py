@@ -126,8 +126,10 @@ class Leifur(object):
             '%s',
             end or ''
         )
+        if perc > 1:
+            perc = 1
         progress_width = self.get_ui_width() - len(s) + 2
-        s = s % ('#'*int(perc*progress_width)).ljust(progress_width)
+        s = s % ('#' * int(perc * progress_width)).ljust(progress_width)
 
         click.echo(s, nl=False)
 
